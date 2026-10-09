@@ -1,0 +1,8 @@
+dist/
+.build/
+.serena/
+Data/
+*.exe
+*.bak
+*.tmp
+*.log
