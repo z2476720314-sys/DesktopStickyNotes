@@ -237,7 +237,7 @@ namespace DesktopStickyNotes
 
         static bool HasClipboardImage(IDataObject data)
         {
-            return data != null && (data.GetDataPresent("PNG") || data.GetDataPresent(DataFormats.Bitmap) || data.GetDataPresent(DataFormats.FileDrop));
+            return data != null && (data.GetDataPresent("PNG") || data.GetDataPresent("image/png") || data.GetDataPresent(DataFormats.Bitmap) || data.GetDataPresent(DataFormats.FileDrop));
         }
 
         bool PasteImage(IDataObject data)
@@ -245,14 +245,16 @@ namespace DesktopStickyNotes
             if (!HasClipboardImage(data)) return false;
             try
             {
-                if (data.GetDataPresent("PNG"))
+                if (data.GetDataPresent("PNG") || data.GetDataPresent("image/png"))
                 {
-                    var stream = data.GetData("PNG") as Stream;
+                    var stream = data.GetData(data.GetDataPresent("PNG") ? "PNG" : "image/png") as Stream;
                     if (stream == null) throw new InvalidOperationException("剪贴板图片格式无法读取，请通过图片图标选择文件。");
                     if (stream.CanSeek) stream.Position = 0;
                     AddImage(images.Add(ImageStore.Decode(stream), "图片 " + DateTime.Now.ToString("MM-dd HH:mm:ss")));
                 }
-                else if (data.GetDataPresent(DataFormats.Bitmap)) AddImage(images.Add(Clipboard.GetImage(), "图片 " + DateTime.Now.ToString("MM-dd HH:mm:ss")));
+                // Screenshot DIB alpha bytes can be unused; PNG carries real transparency.
+                else if (data.GetDataPresent(DataFormats.Bitmap)) AddImage(images.Add(
+                    new FormatConvertedBitmap(Clipboard.GetImage(), PixelFormats.Bgr32, null, 0), "图片 " + DateTime.Now.ToString("MM-dd HH:mm:ss")));
                 else foreach (string file in (string[])data.GetData(DataFormats.FileDrop)) AddImage(images.Import(file));
             }
             catch (Exception ex) { ImageError(ex); }

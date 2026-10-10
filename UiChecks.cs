@@ -461,6 +461,40 @@ static class UiChecks
                     "Ctrl+V saves a real clipboard PNG as an image link without replacing note text");
                 Check(((ValuePattern)Find(process.Id, "NoteEditor").GetCurrentPattern(ValuePattern.Pattern)).Current.Value.Replace("\r\n", "\n") == text,
                     "pasting an image preserves existing Chinese text");
+                var dib = new byte[40 + 160 * 100 * 4];
+                using (var writer = new BinaryWriter(new MemoryStream(dib)))
+                {
+                    writer.Write(40); writer.Write(160); writer.Write(100); writer.Write((short)1); writer.Write((short)32);
+                    writer.Write(0); writer.Write(160 * 100 * 4); writer.Write(0); writer.Write(0); writer.Write(0); writer.Write(0);
+                    for (int pixel = 0; pixel < 160 * 100; pixel++) { writer.Write((byte)146); writer.Write((byte)198); writer.Write((byte)36); writer.Write((byte)0); }
+                }
+                foreach (bool includeMimePng in new[] { false, true })
+                {
+                    var screenshot = new Forms.DataObject(); screenshot.SetData(Forms.DataFormats.Dib, false, new MemoryStream(dib));
+                    if (includeMimePng) screenshot.SetData("image/png", false, new MemoryStream(png));
+                    Forms.Clipboard.SetDataObject(screenshot, true);
+                    SetForegroundWindow(hwnd); Find(process.Id, "NoteEditor").SetFocus(); Shortcut(0x11, 0x56); Pause(1000);
+                    var pasted = Read(directory).Descendants("NoteImage").ToArray();
+                    Check(pasted.Length == 2, (includeMimePng ? "MIME PNG" : "DIB") + " screenshot clipboard creates an image link");
+                    string screenshotFile = pasted[1].Element("FileName").Value;
+                    Invoke(process.Id, "ImageLink-" + screenshotFile); Wait(() => PreviewWindow(process.Id) != null, "screenshot preview");
+                    var screenshotArea = Find(process.Id, "PreviewImage").Current.BoundingRectangle;
+                    var screenshotBounds = Bounds(new IntPtr(PreviewWindow(process.Id).Current.NativeWindowHandle));
+                    using (var capture = Capture(screenshotBounds, Path.Combine(evidence, includeMimePng ? "mime-png-screenshot-preview.png" : "dib-screenshot-preview.png")))
+                    {
+                        var center = capture.GetPixel((int)(screenshotArea.Left + screenshotArea.Width / 2) - screenshotBounds.Left,
+                            (int)(screenshotArea.Top + screenshotArea.Height / 2) - screenshotBounds.Top);
+                        Check(Math.Abs(center.R - 36) < 2 && Math.Abs(center.G - 198) < 2 && Math.Abs(center.B - 146) < 2,
+                            (includeMimePng ? "MIME PNG" : "DIB") + " screenshot preview shows actual pixels instead of a blank transparent image");
+                        if (includeMimePng)
+                        {
+                            var alpha = capture.GetPixel((int)screenshotArea.Left + 2 - screenshotBounds.Left, (int)screenshotArea.Top + 2 - screenshotBounds.Top);
+                            Check(alpha.R == 182 && alpha.G == 207 && alpha.B == 217, "MIME PNG takes priority over DIB and keeps transparent pixels");
+                        }
+                    }
+                    Invoke(process.Id, "RemoveImage-" + screenshotFile); Pause(900);
+                }
+                SetForegroundWindow(hwnd); Find(process.Id, "NoteEditor").SetFocus();
                 Forms.Clipboard.SetText("普通文字粘贴"); Shortcut(0x11, 0x23); Shortcut(0x11, 0x56); Pause(250);
                 Check(((ValuePattern)Find(process.Id, "NoteEditor").GetCurrentPattern(ValuePattern.Pattern)).Current.Value.EndsWith("普通文字粘贴"),
                     "image paste command keeps ordinary text paste working");

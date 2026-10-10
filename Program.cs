@@ -11,8 +11,8 @@ using System.Windows.Threading;
 using Forms = System.Windows.Forms;
 
 [assembly: AssemblyTitle("透明便签")]
-[assembly: AssemblyVersion("1.1.0.0")]
-[assembly: AssemblyFileVersion("1.1.0.0")]
+[assembly: AssemblyVersion("1.1.1.0")]
+[assembly: AssemblyFileVersion("1.1.1.0")]
 
 namespace DesktopStickyNotes
 {
