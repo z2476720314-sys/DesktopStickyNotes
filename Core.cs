@@ -8,10 +8,23 @@ using System.Xml.Serialization;
 
 namespace DesktopStickyNotes
 {
+    public sealed class NoteImage
+    {
+        public string FileName, DisplayName;
+
+        public void Normalize()
+        {
+            if (FileName == null || !Regex.IsMatch(FileName, "^[0-9a-fA-F]{32}\\.png$"))
+                throw new InvalidOperationException("便签图片引用无效。");
+            DisplayName = string.IsNullOrWhiteSpace(DisplayName) ? "图片" : DisplayName.Replace('\r', ' ').Replace('\n', ' ');
+        }
+    }
+
     public sealed class NoteData
     {
         public string Text = "";
         public string TextColor;
+        public List<NoteImage> Images = new List<NoteImage>();
         public double Left = double.NaN, Top = double.NaN;
         public double Width = 330, Height = 310, BackgroundOpacity = 0.22, FontSize = 17;
         public bool Topmost = true, Visible = true, DarkText = false, ClickThrough = false;
@@ -19,6 +32,12 @@ namespace DesktopStickyNotes
         public void Normalize()
         {
             Text = Text ?? "";
+            Images = Images ?? new List<NoteImage>();
+            foreach (var image in Images)
+            {
+                if (image == null) throw new InvalidOperationException("便签图片引用无效。");
+                image.Normalize();
+            }
             if (TextColor == null || !Regex.IsMatch(TextColor, "^#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?$"))
                 TextColor = DarkText ? "#182732" : "#F8FAFC";
             else TextColor = (TextColor.Length == 9 ? "#" + TextColor.Substring(3) : TextColor).ToUpperInvariant();

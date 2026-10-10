@@ -1,4 +1,5 @@
 using System;
+using System.IO;
 using System.Linq;
 using System.Reflection;
 using System.Runtime.InteropServices;
@@ -19,6 +20,11 @@ namespace DesktopStickyNotes
         [DllImport("user32.dll", SetLastError = true)] static extern int GetWindowLong(IntPtr hwnd, int index);
         [DllImport("user32.dll", SetLastError = true)] static extern int SetWindowLong(IntPtr hwnd, int index, int value);
         readonly NoteData note;
+        readonly ImageStore images;
+        readonly StackPanel imageLinks;
+        readonly ScrollViewer imageScroll;
+        ImagePreviewWindow preview;
+        NoteImage previewImage;
         readonly Border surface;
         readonly Grid layout;
         readonly TextBox editor;
@@ -35,7 +41,7 @@ namespace DesktopStickyNotes
  xmlns:x='http://schemas.microsoft.com/winfx/2006/xaml' x:Name='Surface' CornerRadius='12' BorderThickness='1'>
  <Border.Resources>
   <Style TargetType='Button'>
-   <Setter Property='Width' Value='30'/><Setter Property='Height' Value='28'/>
+   <Setter Property='Width' Value='28'/><Setter Property='Height' Value='28'/>
    <Setter Property='FontSize' Value='16'/><Setter Property='Foreground' Value='#F6FAFF'/>
    <Setter Property='Background' Value='Transparent'/><Setter Property='BorderBrush' Value='Transparent'/>
    <Setter Property='Template'><Setter.Value><ControlTemplate TargetType='Button'>
@@ -50,7 +56,7 @@ namespace DesktopStickyNotes
   </Style>
  </Border.Resources>
  <Grid x:Name='Layout' Margin='14,8,14,8'>
-  <Grid.RowDefinitions><RowDefinition Height='32'/><RowDefinition Height='*'/><RowDefinition Height='24'/></Grid.RowDefinitions>
+  <Grid.RowDefinitions><RowDefinition Height='32'/><RowDefinition Height='*'/><RowDefinition Height='Auto'/><RowDefinition Height='24'/></Grid.RowDefinitions>
   <DockPanel x:Name='Toolbar' LastChildFill='True'>
    <StackPanel DockPanel.Dock='Right' Orientation='Horizontal'>
     <Button x:Name='NewButton' AutomationProperties.AutomationId='NewNoteButton' AutomationProperties.Name='新建便签' ToolTip='新建便签（Ctrl+N）' Content='＋'/>
@@ -70,6 +76,11 @@ namespace DesktopStickyNotes
       <Ellipse Width='3' Height='3' Fill='#F3D79B' HorizontalAlignment='Left' VerticalAlignment='Top' Margin='6,12,0,0'/>
      </Grid></Viewbox>
     </Button>
+    <Button x:Name='ImageButton' AutomationProperties.AutomationId='AddImageButton' AutomationProperties.Name='添加图片' ToolTip='添加图片；也可直接 Ctrl+V 粘贴图片'>
+     <Viewbox Width='17' Height='17'>
+      <Path x:Name='ImageIcon' Data='M 3,4 L 21,4 L 21,20 L 3,20 Z M 3,16 L 8,11 L 13,16 L 17,12 L 21,16 M 14,8 A 1.5,1.5 0 1 0 17,8 A 1.5,1.5 0 1 0 14,8' StrokeThickness='1.5' StrokeLineJoin='Round'/>
+     </Viewbox>
+    </Button>
     <Button x:Name='ThroughButton' AutomationProperties.AutomationId='MouseThroughButton' AutomationProperties.Name='开启鼠标穿透' ToolTip='鼠标穿透：点击下方窗口；双击托盘恢复编辑'>
      <Viewbox Width='17' Height='17'>
       <Path x:Name='ThroughIcon' Data='M 4,3 L 4,18 L 8,14 L 12,22 L 15,20 L 11,13 L 18,13 Z M 16,3 L 22,3 L 22,9'
@@ -87,12 +98,15 @@ namespace DesktopStickyNotes
    <TextBox x:Name='NoteEditor' AutomationProperties.AutomationId='NoteEditor' AutomationProperties.Name='便签内容'
     Background='Transparent' BorderThickness='0' Padding='0' Foreground='#F6FAFF'
     FontFamily='Microsoft YaHei UI' TextWrapping='Wrap' AcceptsReturn='True' AcceptsTab='True'
-    VerticalScrollBarVisibility='Auto' HorizontalScrollBarVisibility='Disabled'
+    VerticalScrollBarVisibility='Hidden' HorizontalScrollBarVisibility='Disabled'
     SelectionBrush='#609AE4F3' CaretBrush='#A8F0FC' SpellCheck.IsEnabled='False'/>
    <TextBlock x:Name='Placeholder' Text='记下此刻要做的事…' IsHitTestVisible='False' FontFamily='Microsoft YaHei UI' FontSize='17' Foreground='#95DCE8F0'/>
   </Grid>
-  <TextBlock x:Name='Status' Grid.Row='2' Text='已保存' FontSize='10' Foreground='#B8DCE8F0' VerticalAlignment='Center' IsHitTestVisible='False'/>
-  <Thumb x:Name='Grip' Grid.Row='2' AutomationProperties.AutomationId='ResizeGrip' AutomationProperties.Name='调整便签大小'
+  <ScrollViewer x:Name='ImageScroll' Grid.Row='2' Visibility='Collapsed' VerticalScrollBarVisibility='Hidden' HorizontalScrollBarVisibility='Disabled' Margin='0,2,0,4'>
+   <StackPanel x:Name='ImageLinks'/>
+  </ScrollViewer>
+  <TextBlock x:Name='Status' Grid.Row='3' Text='已保存' FontSize='10' Foreground='#B8DCE8F0' VerticalAlignment='Center' IsHitTestVisible='False'/>
+  <Thumb x:Name='Grip' Grid.Row='3' AutomationProperties.AutomationId='ResizeGrip' AutomationProperties.Name='调整便签大小'
    Width='22' Height='22' HorizontalAlignment='Right' VerticalAlignment='Bottom' Cursor='SizeNWSE'>
    <Thumb.Template><ControlTemplate TargetType='Thumb'><Grid Background='Transparent'>
     <Path Data='M 10,18 L 18,10 M 14,18 L 18,14' Stroke='#A0DAEBF8' StrokeThickness='1.3'/>
@@ -101,9 +115,9 @@ namespace DesktopStickyNotes
  </Grid>
 </Border>";
 
-        public NoteWindow(NoteData data)
+        public NoteWindow(NoteData data, ImageStore imageStore)
         {
-            note = data;
+            note = data; images = imageStore;
             note.Normalize();
             Title = "透明便签";
             WindowStyle = WindowStyle.None;
@@ -125,8 +139,20 @@ namespace DesktopStickyNotes
             status = (TextBlock)surface.FindName("Status");
             toolbar = (DockPanel)surface.FindName("Toolbar");
             pin = (Button)surface.FindName("PinButton");
+            imageLinks = (StackPanel)surface.FindName("ImageLinks");
+            imageScroll = (ScrollViewer)surface.FindName("ImageScroll");
             editor.Text = note.Text;
             ApplyAppearance();
+            CommandManager.AddPreviewCanExecuteHandler(editor, delegate(object sender, CanExecuteRoutedEventArgs e) {
+                if (e.Command != ApplicationCommands.Paste) return;
+                try { if (HasClipboardImage(Clipboard.GetDataObject())) { e.CanExecute = true; e.Handled = true; } }
+                catch (ExternalException) { }
+            });
+            CommandManager.AddPreviewExecutedHandler(editor, delegate(object sender, ExecutedRoutedEventArgs e) {
+                if (e.Command != ApplicationCommands.Paste) return;
+                try { if (PasteImage(Clipboard.GetDataObject())) e.Handled = true; }
+                catch (ExternalException ex) { e.Handled = true; ImageError(ex); }
+            });
             editor.TextChanged += delegate {
                 note.Text = editor.Text;
                 placeholder.Visibility = note.Text.Length == 0 ? Visibility.Visible : Visibility.Collapsed;
@@ -147,12 +173,13 @@ namespace DesktopStickyNotes
             };
             ((Button)surface.FindName("NewButton")).Click += delegate { Raise(NewRequested); };
             ((Button)surface.FindName("ColorButton")).Click += delegate { PickTextColor(); };
+            ((Button)surface.FindName("ImageButton")).Click += delegate { PickImages(); };
             ((Button)surface.FindName("ThroughButton")).Click += delegate { SetClickThrough(true); };
             pin.Click += delegate { note.Topmost = !note.Topmost; Topmost = note.Topmost; ApplyAppearance(); Raise(Changed); };
             ((Button)surface.FindName("HideButton")).Click += delegate { HideNote(); };
             var options = (Button)surface.FindName("OptionsButton");
             options.Click += delegate { options.ContextMenu = BuildMenu(); options.ContextMenu.PlacementTarget = options; options.ContextMenu.IsOpen = true; };
-            SizeChanged += delegate { note.Width = Width; note.Height = Height; Raise(Changed); };
+            SizeChanged += delegate { note.Width = Width; note.Height = Height; LayoutImages(); Raise(Changed); };
             LocationChanged += delegate { note.Left = Left; note.Top = Top; Raise(Changed); };
             PreviewMouseLeftButtonDown += delegate(object sender, MouseButtonEventArgs e) { clickStart = PointToScreen(e.GetPosition(this)); };
             PreviewMouseLeftButtonUp += delegate(object sender, MouseButtonEventArgs e) {
@@ -171,6 +198,7 @@ namespace DesktopStickyNotes
             Loaded += delegate { editor.Focus(); UpdateChrome(); };
             Closing += delegate(object sender, System.ComponentModel.CancelEventArgs e) {
                 if (!AllowClose) { e.Cancel = true; HideNote(); }
+                else ClosePreview();
             };
             PreviewKeyDown += delegate(object sender, KeyEventArgs e) {
                 if (Keyboard.Modifiers == ModifierKeys.Control && e.Key == Key.N) { Raise(NewRequested); e.Handled = true; }
@@ -181,7 +209,107 @@ namespace DesktopStickyNotes
         void Raise(EventHandler handler) { if (handler != null) handler(this, EventArgs.Empty); }
         public void SetStatus(string text) { status.Text = text; }
         public void ShowNote() { SetClickThrough(false); note.Visible = true; Show(); Activate(); editor.Focus(); Raise(Changed); }
-        public void HideNote() { note.Visible = false; Hide(); Raise(Changed); }
+        public void HideNote() { ClosePreview(); note.Visible = false; Hide(); Raise(Changed); }
+
+        void ClosePreview() { if (preview != null) preview.Close(); }
+
+        void AddImage(NoteImage image)
+        {
+            note.Images.Add(image); RefreshImages(); Raise(Changed);
+        }
+
+        void PickImages()
+        {
+            using (var dialog = new System.Windows.Forms.OpenFileDialog { Title = "选择图片", Multiselect = true,
+                Filter = "图片|*.png;*.jpg;*.jpeg;*.bmp;*.gif;*.tif;*.tiff", CheckFileExists = true })
+            {
+                if (dialog.ShowDialog(new NativeOwner(new WindowInteropHelper(this).Handle)) != System.Windows.Forms.DialogResult.OK) return;
+                try { foreach (string file in dialog.FileNames) AddImage(images.Import(file)); }
+                catch (Exception ex) { ImageError(ex); }
+            }
+        }
+
+        sealed class NativeOwner : System.Windows.Forms.IWin32Window
+        {
+            public IntPtr Handle { get; private set; }
+            public NativeOwner(IntPtr handle) { Handle = handle; }
+        }
+
+        static bool HasClipboardImage(IDataObject data)
+        {
+            return data != null && (data.GetDataPresent("PNG") || data.GetDataPresent(DataFormats.Bitmap) || data.GetDataPresent(DataFormats.FileDrop));
+        }
+
+        bool PasteImage(IDataObject data)
+        {
+            if (!HasClipboardImage(data)) return false;
+            try
+            {
+                if (data.GetDataPresent("PNG"))
+                {
+                    var stream = data.GetData("PNG") as Stream;
+                    if (stream == null) throw new InvalidOperationException("剪贴板图片格式无法读取，请通过图片图标选择文件。");
+                    if (stream.CanSeek) stream.Position = 0;
+                    AddImage(images.Add(ImageStore.Decode(stream), "图片 " + DateTime.Now.ToString("MM-dd HH:mm:ss")));
+                }
+                else if (data.GetDataPresent(DataFormats.Bitmap)) AddImage(images.Add(Clipboard.GetImage(), "图片 " + DateTime.Now.ToString("MM-dd HH:mm:ss")));
+                else foreach (string file in (string[])data.GetData(DataFormats.FileDrop)) AddImage(images.Import(file));
+            }
+            catch (Exception ex) { ImageError(ex); }
+            return true;
+        }
+
+        void ImageError(Exception ex)
+        {
+            MessageBox.Show(this, "图片无法读取或保存，已有便签内容保留。\n" + ex.Message, "透明便签", MessageBoxButton.OK, MessageBoxImage.Error);
+        }
+
+        void RefreshImages()
+        {
+            imageLinks.Children.Clear();
+            foreach (var entry in note.Images)
+            {
+                var image = entry;
+                var row = new Grid();
+                row.ColumnDefinitions.Add(new ColumnDefinition());
+                row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
+                var link = new Button { Width = double.NaN, Height = 28, HorizontalAlignment = HorizontalAlignment.Left,
+                    Foreground = editor.Foreground, FontSize = note.FontSize, ToolTip = "点击预览：" + image.DisplayName,
+                    Content = new TextBlock { Text = image.DisplayName, TextDecorations = TextDecorations.Underline,
+                        TextTrimming = TextTrimming.CharacterEllipsis, Width = Math.Max(40, Width - 90) } };
+                System.Windows.Automation.AutomationProperties.SetAutomationId(link, "ImageLink-" + image.FileName);
+                System.Windows.Automation.AutomationProperties.SetName(link, image.DisplayName);
+                link.Click += delegate {
+                    try
+                    {
+                        var bitmap = images.Load(image); ClosePreview();
+                        previewImage = image; preview = new ImagePreviewWindow(this, bitmap, image.DisplayName);
+                        preview.Closed += delegate { preview = null; previewImage = null; };
+                        preview.Show();
+                    }
+                    catch (Exception ex) { ImageError(ex); }
+                };
+                row.Children.Add(link);
+                var remove = new Button { Width = 24, Height = 28, Foreground = status.Foreground, Content = "×", ToolTip = "移除图片链接" };
+                System.Windows.Automation.AutomationProperties.SetAutomationId(remove, "RemoveImage-" + image.FileName);
+                System.Windows.Automation.AutomationProperties.SetName(remove, "移除图片链接：" + image.DisplayName);
+                remove.Click += delegate {
+                    if (previewImage == image) ClosePreview();
+                    note.Images.Remove(image); RefreshImages(); Raise(Changed);
+                };
+                Grid.SetColumn(remove, 1); row.Children.Add(remove); imageLinks.Children.Add(row);
+            }
+            imageScroll.Visibility = note.Images.Count == 0 ? Visibility.Collapsed : Visibility.Visible;
+            LayoutImages();
+        }
+
+        void LayoutImages()
+        {
+            if (imageScroll == null) return;
+            imageScroll.MaxHeight = Math.Max(28, (Height - 120) * 0.45);
+            foreach (Grid row in imageLinks.Children)
+                ((TextBlock)((Button)row.Children[0]).Content).Width = Math.Max(40, Width - 90);
+        }
 
         void ApplyWindowStyle(bool clickThrough)
         {
@@ -195,6 +323,7 @@ namespace DesktopStickyNotes
 
         public void SetClickThrough(bool enabled)
         {
+            if (enabled) ClosePreview();
             if (note.ClickThrough == enabled) return;
             ApplyWindowStyle(enabled);
             note.ClickThrough = enabled;
@@ -255,11 +384,13 @@ namespace DesktopStickyNotes
             status.Foreground = uiForeground;
             ((System.Windows.Shapes.Path)surface.FindName("PinIcon")).Stroke = uiForeground;
             ((System.Windows.Shapes.Path)surface.FindName("ColorIcon")).Stroke = uiForeground;
+            ((System.Windows.Shapes.Path)surface.FindName("ImageIcon")).Stroke = uiForeground;
             ((System.Windows.Shapes.Path)surface.FindName("ThroughIcon")).Stroke = uiForeground;
             var slash = (System.Windows.Shapes.Path)surface.FindName("PinSlash");
             slash.Stroke = uiForeground; slash.Visibility = note.Topmost ? Visibility.Collapsed : Visibility.Visible;
             pin.Background = note.Topmost ? new SolidColorBrush(Color.FromArgb(28, 150, 225, 245)) : Brushes.Transparent;
             pin.ToolTip = note.Topmost ? "已置顶；点击取消" : "未置顶；点击置顶";
+            RefreshImages();
             UpdateChrome();
         }
 

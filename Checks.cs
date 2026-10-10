@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using DesktopStickyNotes;
 
 static class Checks
@@ -72,6 +73,23 @@ static class Checks
             File.WriteAllText(store.FilePath, "<DesktopStickyNotes><Notes><NoteData><Text>旧便签</Text></NoteData></Notes></DesktopStickyNotes>");
             store.Save(store.Load());
             Check(File.ReadAllText(store.FilePath).Contains("<ClickThrough>false</ClickThrough>"), "legacy notes default to editable mode");
+            File.WriteAllText(store.FilePath, "<DesktopStickyNotes><Notes><NoteData><Text>图片说明</Text><Images><NoteImage><FileName>0123456789abcdef0123456789abcdef.png</FileName><DisplayName>参考图片.png</DisplayName></NoteImage></Images></NoteData></Notes></DesktopStickyNotes>");
+            store.Save(store.Load());
+            var imageRoundtrip = System.Xml.Linq.XDocument.Load(store.FilePath);
+            Check(imageRoundtrip.Descendants("FileName").FirstOrDefault() != null &&
+                imageRoundtrip.Descendants("FileName").First().Value == "0123456789abcdef0123456789abcdef.png" &&
+                imageRoundtrip.Descendants("DisplayName").First().Value == "参考图片.png" &&
+                imageRoundtrip.Descendants("Text").First().Value == "图片说明", "image links and text survive save and reload together");
+            var invalidImageDirectory = Path.Combine(directory, "invalid-image");
+            Directory.CreateDirectory(invalidImageDirectory);
+            File.WriteAllText(Path.Combine(invalidImageDirectory, "notes.xml"), "<DesktopStickyNotes><Notes><NoteData><Images><NoteImage><FileName>../outside.png</FileName></NoteImage></Images></NoteData></Notes></DesktopStickyNotes>");
+            bool invalidImageRejected = false;
+            try { new NoteStore(invalidImageDirectory).Load(); } catch (InvalidOperationException) { invalidImageRejected = true; }
+            Check(invalidImageRejected, "image links cannot refer to files outside their own data directory");
+            store.Save(new List<NoteData> { new NoteData { Text = "移除图片后" } });
+            Check(System.Xml.Linq.XDocument.Load(store.FilePath).Descendants("NoteImage").Count() == 0 &&
+                System.Xml.Linq.XDocument.Load(store.FilePath + ".bak").Descendants("NoteImage").Count() == 1,
+                "removing image links preserves the preceding references in the XML backup");
             Console.WriteLine("All persistence checks passed.");
             return 0;
         }

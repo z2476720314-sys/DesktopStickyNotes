@@ -14,6 +14,10 @@ static class UiChecks
 {
     [StructLayout(LayoutKind.Sequential)] struct RECT { public int Left, Top, Right, Bottom; }
     [StructLayout(LayoutKind.Sequential)] struct POINT { public int X, Y; }
+    [StructLayout(LayoutKind.Sequential)] struct KEYINPUT { public ushort Key, Scan; public uint Flags, Time; public UIntPtr Extra; }
+    [StructLayout(LayoutKind.Sequential)] struct MOUSEINPUT { public int X, Y; public uint Data, Flags, Time; public UIntPtr Extra; }
+    [StructLayout(LayoutKind.Explicit)] struct INPUTDATA { [FieldOffset(0)] public KEYINPUT Key; [FieldOffset(0)] public MOUSEINPUT Mouse; }
+    [StructLayout(LayoutKind.Sequential)] struct INPUT { public uint Type; public INPUTDATA Data; }
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)] struct SHELLINFO
     {
         public IntPtr Icon; public int Index; public uint Attributes;
@@ -26,6 +30,9 @@ static class UiChecks
     [DllImport("user32.dll")] static extern bool SetWindowPos(IntPtr hwnd, IntPtr after, int x, int y, int cx, int cy, uint flags);
     [DllImport("user32.dll")] static extern bool SetCursorPos(int x, int y);
     [DllImport("user32.dll")] static extern bool GetCursorPos(out POINT point);
+    [DllImport("user32.dll")] static extern IntPtr WindowFromPoint(POINT point);
+    [DllImport("user32.dll")] static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll")] static extern bool SetForegroundWindow(IntPtr hwnd);
     [DllImport("user32.dll")] static extern IntPtr GetWindow(IntPtr hwnd, uint command);
     [DllImport("user32.dll")] static extern IntPtr SendMessage(IntPtr hwnd, uint message, IntPtr wparam, IntPtr lparam);
     [DllImport("user32.dll", CharSet = CharSet.Unicode)] static extern IntPtr FindWindow(string className, string title);
@@ -33,10 +40,23 @@ static class UiChecks
     [DllImport("shell32.dll", CharSet = CharSet.Unicode)] static extern IntPtr SHGetFileInfo(string path, uint attributes, ref SHELLINFO info, uint size, uint flags);
     [DllImport("shell32.dll", CharSet = CharSet.Unicode)] static extern void SHChangeNotify(uint eventId, uint flags, string path, string other);
     [DllImport("user32.dll")] static extern void mouse_event(uint flags, uint x, uint y, uint data, UIntPtr extra);
+    [DllImport("user32.dll", SetLastError = true)] static extern uint SendInput(uint count, INPUT[] input, int size);
 
     static void Check(bool value, string message) { if (!value) throw new Exception("FAIL: " + message); Console.WriteLine("PASS: " + message); }
     static void Pause(int ms) { var timer = Stopwatch.StartNew(); while (timer.ElapsedMilliseconds < ms) { Forms.Application.DoEvents(); Thread.Sleep(30); } }
     static void Wait(Func<bool> condition, string message) { for (int i = 0; i < 60; i++) { if (condition()) return; Pause(100); } throw new Exception("Timeout: " + message); }
+    static void Shortcut(params ushort[] keys)
+    {
+        var input = new INPUT[keys.Length * 2];
+        for (int i = 0; i < keys.Length; i++)
+        {
+            input[i] = new INPUT { Type = 1, Data = new INPUTDATA { Key = new KEYINPUT { Key = keys[i] } } };
+            input[keys.Length + i] = new INPUT { Type = 1, Data = new INPUTDATA { Key = new KEYINPUT { Key = keys[keys.Length - i - 1], Flags = 2 } } };
+        }
+        if (SendInput((uint)input.Length, input, Marshal.SizeOf(typeof(INPUT))) != input.Length)
+            throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+        Pause(150);
+    }
     static AutomationElement Window(int pid)
     {
         return AutomationElement.RootElement.FindFirst(TreeScope.Children, new AndCondition(
@@ -52,6 +72,13 @@ static class UiChecks
             if (found != null) return found;
         }
         throw new Exception("Control not found: " + id);
+    }
+    static AutomationElement PreviewWindow(int pid)
+    {
+        var hwnd = FindWindow(null, "图片预览");
+        if (hwnd == IntPtr.Zero) return null;
+        var window = AutomationElement.FromHandle(hwnd);
+        return window.Current.ProcessId == pid ? window : null;
     }
     static void Invoke(int pid, string id) { ((InvokePattern)Find(pid, id).GetCurrentPattern(InvokePattern.Pattern)).Invoke(); Pause(150); }
     static RECT Bounds(IntPtr hwnd) { RECT value; GetWindowRect(hwnd, out value); return value; }
@@ -105,7 +132,7 @@ static class UiChecks
         using (var bitmap = Capture(rect, evidence))
         {
             int tinted = 0;
-            foreach (string id in new[] { "NewNoteButton", "PinButton", "ColorButton", "MouseThroughButton", "OptionsButton", "HideButton", "Status" })
+            foreach (string id in new[] { "NewNoteButton", "PinButton", "ColorButton", "AddImageButton", "MouseThroughButton", "OptionsButton", "HideButton", "Status" })
                 tinted += ContentColorPixels(bitmap, rect, Find(pid, id).Current.BoundingRectangle);
             var title = Window(pid).FindFirst(TreeScope.Descendants, new PropertyCondition(AutomationElement.NameProperty, "便签"));
             tinted += ContentColorPixels(bitmap, rect, title.Current.BoundingRectangle);
@@ -274,6 +301,7 @@ static class UiChecks
             backdrop.Controls.Add(new Forms.Panel { Location = new Point(480 - screen.Left, 0), Size = new Size(screen.Width, screen.Height), BackColor = Color.FromArgb(182, 207, 217) });
             backdrop.Show(); Pause(100);
             SetWindowPos(hwnd, new IntPtr(-1), 310, 230, 0, 0, 0x11); Pause(250);
+            SetForegroundWindow(hwnd); Pause(150);
             var before = Bounds(hwnd);
             SetCursorPos(before.Left + 30, before.Top + 75); Pause(400);
             CheckChrome(hwnd, false, Path.Combine(evidence, "hover-hidden-note.png"), "hover does not reveal the toolbar");
@@ -407,6 +435,186 @@ static class UiChecks
             Click(noteBounds.Left + 55, noteBounds.Top + 90);
             Check(underneathClicks == 2 && Find(process.Id, "NoteEditor").Current.IsEnabled, "recovered note accepts mouse input again");
             backdrop.Controls.Remove(underneath); underneath.Dispose();
+            var originalClipboard = Forms.Clipboard.GetDataObject();
+            try
+            {
+                byte[] png;
+                using (var fixture = new Bitmap(160, 100, PixelFormat.Format32bppArgb))
+                using (var graphics = Graphics.FromImage(fixture))
+                using (var stream = new MemoryStream())
+                using (var fill = new SolidBrush(Color.FromArgb(36, 198, 146)))
+                {
+                    graphics.Clear(Color.Transparent);
+                    graphics.FillRectangle(fill, 10, 10, 140, 80);
+                    fixture.Save(stream, ImageFormat.Png); png = stream.ToArray();
+                }
+                var clipboardImage = new Forms.DataObject();
+                clipboardImage.SetData("PNG", false, new MemoryStream(png));
+                Forms.Clipboard.SetDataObject(clipboardImage, true);
+                SetForegroundWindow(hwnd);
+                Find(process.Id, "NoteEditor").SetFocus();
+                Check(GetForegroundWindow() == hwnd && AutomationElement.FocusedElement.Current.ProcessId == process.Id,
+                    "clipboard keyboard input targets the actual note window");
+                Shortcut(0x11, 0x56); Pause(1000);
+                var imageEntries = Read(directory).Descendants("NoteImage").ToArray();
+                Check(imageEntries.Length == 1 && File.Exists(Path.Combine(directory, "Images", imageEntries[0].Element("FileName").Value)),
+                    "Ctrl+V saves a real clipboard PNG as an image link without replacing note text");
+                Check(((ValuePattern)Find(process.Id, "NoteEditor").GetCurrentPattern(ValuePattern.Pattern)).Current.Value.Replace("\r\n", "\n") == text,
+                    "pasting an image preserves existing Chinese text");
+                Forms.Clipboard.SetText("普通文字粘贴"); Shortcut(0x11, 0x23); Shortcut(0x11, 0x56); Pause(250);
+                Check(((ValuePattern)Find(process.Id, "NoteEditor").GetCurrentPattern(ValuePattern.Pattern)).Current.Value.EndsWith("普通文字粘贴"),
+                    "image paste command keeps ordinary text paste working");
+                ((ValuePattern)Find(process.Id, "NoteEditor").GetCurrentPattern(ValuePattern.Pattern)).SetValue(text);
+                string imageFile = imageEntries[0].Element("FileName").Value;
+                var imageLink = Find(process.Id, "ImageLink-" + imageFile);
+                Check(imageLink.Current.ControlType == ControlType.Button && imageLink.Current.Name.Length > 0,
+                    "image is represented by a named clickable link instead of an inline thumbnail");
+                Invoke(process.Id, "ImageLink-" + imageFile);
+                Wait(() => PreviewWindow(process.Id) != null, "transparent image preview");
+                var previewHwnd = new IntPtr(PreviewWindow(process.Id).Current.NativeWindowHandle);
+                Check((GetWindowLong(previewHwnd, -20) & 0x80000) != 0 && (GetWindowLong(previewHwnd, -20) & 0x80) != 0 &&
+                    GetWindow(previewHwnd, 4) == hwnd, "image preview is layered, owned and excluded from Alt+Tab");
+                foreach (string id in new[] { "ZoomInButton", "ZoomOutButton", "FitImageButton", "ActualSizeButton", "PreviewMoveButton", "ClosePreviewButton" })
+                    Check(Find(process.Id, id).Current.ControlType == ControlType.Button && Find(process.Id, id).Current.Name.Length > 0,
+                        id + " exposes an accessible icon control");
+                var imageArea = Find(process.Id, "PreviewImage").Current.BoundingRectangle;
+                Check(Math.Abs(imageArea.Width - 160) < 2 && Math.Abs(imageArea.Height - 100) < 2, "first preview displays the complete image without cropping");
+                var previewBounds = Bounds(previewHwnd);
+                using (var capture = Capture(previewBounds, Path.Combine(evidence, "transparent-image-preview.png")))
+                {
+                    var corner = capture.GetPixel(capture.Width - 15, capture.Height - 15);
+                    Check(corner.R == 182 && corner.G == 207 && corner.B == 217, "preview background is fully transparent with no tinted overlay");
+                    var center = capture.GetPixel((int)(imageArea.Left + imageArea.Width / 2) - previewBounds.Left,
+                        (int)(imageArea.Top + imageArea.Height / 2) - previewBounds.Top);
+                    Check(Math.Abs(center.R - 36) < 2 && Math.Abs(center.G - 198) < 2 && Math.Abs(center.B - 146) < 2,
+                        "preview renders original image colors without note opacity");
+                    var alpha = capture.GetPixel((int)imageArea.Left + 2 - previewBounds.Left, (int)imageArea.Top + 2 - previewBounds.Top);
+                    Check(alpha.R == 182 && alpha.G == 207 && alpha.B == 217, "transparent PNG pixels keep their transparency in preview");
+                }
+                SetCursorPos((int)(imageArea.Left + imageArea.Width / 2), (int)(imageArea.Top + imageArea.Height / 2));
+                Pause(250);
+                mouse_event(0x800, 0, 0, 120, UIntPtr.Zero); Pause(350);
+                var enlarged = Find(process.Id, "PreviewImage").Current.BoundingRectangle;
+                Check(enlarged.Width > imageArea.Width * 1.15, "real mouse wheel enlarges the image");
+                mouse_event(0x800, 0, 0, unchecked((uint)-120), UIntPtr.Zero); Pause(350);
+                Check(Math.Abs(Find(process.Id, "PreviewImage").Current.BoundingRectangle.Width - 160) < 2, "real mouse wheel shrinks the image");
+                Invoke(process.Id, "ZoomInButton");
+                Check(Find(process.Id, "PreviewImage").Current.BoundingRectangle.Width > 180, "zoom icon enlarges the image");
+                Invoke(process.Id, "ZoomOutButton"); Invoke(process.Id, "ActualSizeButton");
+                imageArea = Find(process.Id, "PreviewImage").Current.BoundingRectangle;
+                Drag((int)(imageArea.Left + 80), (int)(imageArea.Top + 50), 60, 25);
+                var panned = Find(process.Id, "PreviewImage").Current.BoundingRectangle;
+                Check(Math.Abs(panned.Left - imageArea.Left - 60) < 3 && Math.Abs(panned.Top - imageArea.Top - 25) < 3, "dragging the preview pans the image");
+                Invoke(process.Id, "FitImageButton");
+                Check(Math.Abs(Find(process.Id, "PreviewImage").Current.BoundingRectangle.Left - imageArea.Left) < 3, "fit icon restores the complete centered image");
+                var moveControl = Find(process.Id, "PreviewMoveButton").Current.BoundingRectangle;
+                Drag((int)(moveControl.Left + moveControl.Width / 2), (int)(moveControl.Top + moveControl.Height / 2), 30, 20);
+                var movedPreview = Bounds(previewHwnd);
+                Check(Math.Abs(movedPreview.Left - previewBounds.Left - 30) < 3 && Math.Abs(movedPreview.Top - previewBounds.Top - 20) < 3,
+                    "move icon drags the transparent preview window");
+                Invoke(process.Id, "ClosePreviewButton");
+                Wait(() => PreviewWindow(process.Id) == null, "preview closes independently");
+                Check(IsWindowVisible(hwnd), "closing preview keeps the note visible");
+                const string originalName = "参考图片_这是一个较长的文件名_透明预览与滚轮缩放.png";
+                string originalImage = Path.Combine(directory, originalName);
+                using (var large = new Bitmap(2400, 1600))
+                using (var graphics = Graphics.FromImage(large))
+                { graphics.Clear(Color.FromArgb(36, 198, 146)); large.Save(originalImage, ImageFormat.Png); }
+                Invoke(process.Id, "AddImageButton");
+                AutomationElement fileDialog = null;
+                Wait(() => {
+                    var dialogHwnd = FindWindow(null, "选择图片");
+                    if (dialogHwnd == IntPtr.Zero) return false;
+                    fileDialog = AutomationElement.FromHandle(dialogHwnd);
+                    return fileDialog.Current.ProcessId == process.Id;
+                }, "native image file picker");
+                Forms.Clipboard.SetText(originalImage); Shortcut(0x12, 0x4E); Shortcut(0x11, 0x56); Shortcut(0x0D); Pause(1200);
+                imageEntries = Read(directory).Descendants("NoteImage").ToArray();
+                Check(imageEntries.Length == 2 && imageEntries[1].Element("DisplayName").Value == originalName, "image icon imports a selected local file as a named link");
+                var originalNoteBounds = Bounds(hwnd);
+                SetWindowPos(hwnd, new IntPtr(-1), originalNoteBounds.Left, originalNoteBounds.Top, 260, 180, 0x10); Pause(350);
+                var linkBounds = Find(process.Id, "ImageLink-" + imageEntries[1].Element("FileName").Value).Current.BoundingRectangle;
+                var removeBounds = Find(process.Id, "RemoveImage-" + imageEntries[1].Element("FileName").Value).Current.BoundingRectangle;
+                Check(linkBounds.Right <= removeBounds.Left && Find(process.Id, "NoteEditor").Current.BoundingRectangle.Height >= 20,
+                    "long image names stay separate from removal icons and text remains usable at minimum note size");
+                Check(Window(process.Id).FindAll(TreeScope.Descendants, new PropertyCondition(AutomationElement.ControlTypeProperty, ControlType.ScrollBar))
+                    .Cast<AutomationElement>().All(element => element.Current.IsOffscreen),
+                    "overflowing note text and image links have no visible scrollbars");
+                var firstLinkBounds = Find(process.Id, "ImageLink-" + imageFile).Current.BoundingRectangle;
+                SetCursorPos((int)(firstLinkBounds.Left + 20), (int)(firstLinkBounds.Top + firstLinkBounds.Height / 2)); Pause(250);
+                mouse_event(0x800, 0, 0, unchecked((uint)-120), UIntPtr.Zero); Pause(350);
+                Check(!Find(process.Id, "ImageLink-" + imageEntries[1].Element("FileName").Value).Current.IsOffscreen,
+                    "mouse wheel reveals overflowing image links with hidden scrollbars");
+                var textEditor = Find(process.Id, "NoteEditor");
+                ((ValuePattern)textEditor.GetCurrentPattern(ValuePattern.Pattern)).SetValue(string.Join("\n", Enumerable.Range(1, 50).Select(number => "滚动行 " + number)));
+                textEditor.SetFocus(); Shortcut(0x11, 0x24); Pause(200);
+                var textPattern = (TextPattern)textEditor.GetCurrentPattern(TextPattern.Pattern);
+                string visibleBefore = textPattern.GetVisibleRanges()[0].GetText(-1);
+                var editorBounds = textEditor.Current.BoundingRectangle;
+                SetCursorPos((int)(editorBounds.Left + editorBounds.Width / 2), (int)(editorBounds.Top + editorBounds.Height / 2)); Pause(250);
+                mouse_event(0x800, 0, 0, unchecked((uint)-120), UIntPtr.Zero); Pause(350);
+                Check(textPattern.GetVisibleRanges()[0].GetText(-1) != visibleBefore, "note text still scrolls with the mouse wheel while scrollbars stay hidden");
+                Shortcut(0x11, 0x23); Pause(200);
+                Check(textPattern.GetVisibleRanges()[0].GetText(-1).Contains("滚动行 50"), "keyboard navigation reaches the end of text with hidden scrollbars");
+                ((ValuePattern)textEditor.GetCurrentPattern(ValuePattern.Pattern)).SetValue(text); Pause(250);
+                using (var capture = Capture(Bounds(hwnd), Path.Combine(evidence, "minimum-image-note.png"))) { }
+                SetWindowPos(hwnd, new IntPtr(-1), originalNoteBounds.Left, originalNoteBounds.Top,
+                    originalNoteBounds.Right - originalNoteBounds.Left, originalNoteBounds.Bottom - originalNoteBounds.Top, 0x10); Pause(250);
+                using (var capture = Capture(Bounds(hwnd), Path.Combine(evidence, "image-links-note.png"))) { }
+                File.Delete(originalImage);
+                string importedFile = imageEntries[1].Element("FileName").Value;
+                Invoke(process.Id, "ImageLink-" + importedFile);
+                Wait(() => PreviewWindow(process.Id) != null, "preview imported copy");
+                var largeImageArea = Find(process.Id, "PreviewImage").Current.BoundingRectangle;
+                var largePreviewBounds = Bounds(new IntPtr(PreviewWindow(process.Id).Current.NativeWindowHandle));
+                Check(largeImageArea.Width > 150 && Math.Abs(largeImageArea.Width / largeImageArea.Height - 1.5) < 0.01 &&
+                    largeImageArea.Width <= largePreviewBounds.Right - largePreviewBounds.Left + 1 &&
+                    largeImageArea.Height <= largePreviewBounds.Bottom - largePreviewBounds.Top - 48 + 1,
+                    "large imported image fits completely at its original aspect ratio after deleting the source file");
+                Shortcut(0x1B); Wait(() => PreviewWindow(process.Id) == null, "Escape closes preview");
+                Check(IsWindowVisible(hwnd), "Escape closes only the image preview");
+                string widePath = Path.Combine(directory, "超宽图片.png");
+                using (var wide = new Bitmap(24000, 120))
+                using (var graphics = Graphics.FromImage(wide))
+                { graphics.Clear(Color.FromArgb(36, 198, 146)); wide.Save(widePath, ImageFormat.Png); }
+                var imageFiles = new System.Collections.Specialized.StringCollection(); imageFiles.Add(widePath);
+                Forms.Clipboard.SetFileDropList(imageFiles);
+                SetForegroundWindow(hwnd); Find(process.Id, "NoteEditor").SetFocus(); Shortcut(0x11, 0x56); Pause(1000);
+                imageEntries = Read(directory).Descendants("NoteImage").ToArray();
+                Check(imageEntries.Length == 3 && imageEntries[2].Element("DisplayName").Value == "超宽图片.png",
+                    "Ctrl+V imports a copied image file without replacing existing attachments");
+                string wideFile = imageEntries[2].Element("FileName").Value;
+                Invoke(process.Id, "ImageLink-" + wideFile); Wait(() => PreviewWindow(process.Id) != null, "ultrawide image preview");
+                var wideArea = Find(process.Id, "PreviewImage").Current.BoundingRectangle;
+                Invoke(process.Id, "ZoomOutButton");
+                Check(Find(process.Id, "PreviewImage").Current.BoundingRectangle.Width < wideArea.Width * 0.9,
+                    "zoom-out icon shrinks an ultrawide image even when its fitted scale is below five percent");
+                Invoke(process.Id, "FitImageButton");
+                wideArea = Find(process.Id, "PreviewImage").Current.BoundingRectangle;
+                SetCursorPos((int)(wideArea.Left + wideArea.Width / 2), (int)(wideArea.Top + wideArea.Height / 2)); Pause(250);
+                mouse_event(0x800, 0, 0, unchecked((uint)-120), UIntPtr.Zero); Pause(350);
+                Check(Find(process.Id, "PreviewImage").Current.BoundingRectangle.Width < wideArea.Width * 0.9,
+                    "real mouse wheel also shrinks an ultrawide fitted image");
+                Invoke(process.Id, "RemoveImage-" + wideFile); Pause(900);
+                Check(Read(directory).Descendants("NoteImage").Count() == 2 && PreviewWindow(process.Id) == null,
+                    "removing the ultrawide attachment preserves the other image links");
+                Invoke(process.Id, "ImageLink-" + importedFile); Wait(() => PreviewWindow(process.Id) != null, "reopen preview before pass-through");
+                Invoke(process.Id, "MouseThroughButton");
+                Wait(() => PreviewWindow(process.Id) == null, "pass-through also closes owned preview");
+                using (var second = Start(args[0], directory)) second.WaitForExit(5000);
+                Wait(() => (GetWindowLong(hwnd, -20) & 0x20) == 0, "restore editing after preview");
+                Exit(process.Id); Check(process.WaitForExit(5000), "image note saves on normal exit");
+                process.Dispose(); process = Start(args[0], directory);
+                Wait(() => Window(process.Id) != null, "restored image note"); hwnd = new IntPtr(Window(process.Id).Current.NativeWindowHandle);
+                Check(Read(directory).Descendants("NoteImage").Count() == 2 && Find(process.Id, "ImageLink-" + imageFile) != null,
+                    "image links and their local files survive actual EXE restart");
+                Invoke(process.Id, "ImageLink-" + imageFile); Wait(() => PreviewWindow(process.Id) != null, "restored image preview");
+                Invoke(process.Id, "RemoveImage-" + imageFile); Pause(900);
+                Check(Read(directory).Descendants("NoteImage").Count() == 1 && PreviewWindow(process.Id) == null &&
+                    File.Exists(Path.Combine(directory, "Images", imageFile)), "removing an image link closes its preview while retaining the file for XML backup recovery");
+                Check(Read(directory).Descendants("Text").First().Value.Replace("\r\n", "\n") == text, "image attachment operations preserve note text through restart");
+            }
+            finally { if (originalClipboard != null) Forms.Clipboard.SetDataObject(originalClipboard, true); }
             Invoke(process.Id, "NewNoteButton"); Pause(900);
             Check(Read(directory).Descendants("NoteData").Count() == 2, "new-note control creates a second saved note");
             Exit(process.Id); Check(process.WaitForExit(5000), "all note windows close on exit");

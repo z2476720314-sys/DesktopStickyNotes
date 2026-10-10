@@ -11,14 +11,15 @@ using System.Windows.Threading;
 using Forms = System.Windows.Forms;
 
 [assembly: AssemblyTitle("透明便签")]
-[assembly: AssemblyVersion("1.0.5.0")]
-[assembly: AssemblyFileVersion("1.0.5.0")]
+[assembly: AssemblyVersion("1.1.0.0")]
+[assembly: AssemblyFileVersion("1.1.0.0")]
 
 namespace DesktopStickyNotes
 {
     public sealed class NotesApp : Application
     {
         readonly NoteStore store;
+        readonly ImageStore images;
         readonly EventWaitHandle showSignal;
         readonly List<NoteWindow> windows = new List<NoteWindow>();
         List<NoteData> notes;
@@ -28,7 +29,7 @@ namespace DesktopStickyNotes
 
         public NotesApp(string directory, EventWaitHandle signal)
         {
-            store = new NoteStore(directory); showSignal = signal;
+            store = new NoteStore(directory); images = new ImageStore(directory); showSignal = signal;
             ShutdownMode = ShutdownMode.OnExplicitShutdown;
             saveTimer.Tick += delegate { saveTimer.Stop(); Save(false); };
             signalTimer.Tick += delegate { if (showSignal.WaitOne(0)) ShowAll(); };
@@ -70,7 +71,7 @@ namespace DesktopStickyNotes
 
         void CreateWindow(NoteData note)
         {
-            var window = new NoteWindow(note);
+            var window = new NoteWindow(note, images);
             window.Changed += delegate { Dirty(); };
             window.NewRequested += delegate { NewNote(); };
             window.SaveRequested += delegate { Save(true); };
