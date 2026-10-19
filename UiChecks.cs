@@ -81,6 +81,25 @@ static class UiChecks
         return window.Current.ProcessId == pid ? window : null;
     }
     static void Invoke(int pid, string id) { ((InvokePattern)Find(pid, id).GetCurrentPattern(InvokePattern.Pattern)).Invoke(); Pause(150); }
+    static void SetTextTransparency(int pid, IntPtr hwnd, double value)
+    {
+        SetForegroundWindow(hwnd); Invoke(pid, "OptionsButton");
+        ((RangeValuePattern)Find(pid, "TextTransparencySlider").GetCurrentPattern(RangeValuePattern.Pattern)).SetValue(value);
+        Shortcut(0x1B); Pause(900);
+        var bounds = Bounds(hwnd); Click(bounds.Left + 25, bounds.Top + 15);
+        SetCursorPos(50, 70); Pause(150);
+    }
+    static long PixelDifference(Bitmap first, Bitmap second, RECT bounds, System.Windows.Rect area)
+    {
+        long difference = 0;
+        for (int y = Math.Max(0, (int)area.Top - bounds.Top); y < Math.Min(first.Height, (int)area.Bottom - bounds.Top); y++)
+            for (int x = Math.Max(0, (int)area.Left - bounds.Left); x < Math.Min(first.Width, (int)area.Right - bounds.Left); x++)
+            {
+                var a = first.GetPixel(x, y); var b = second.GetPixel(x, y);
+                difference += Math.Abs(a.R - b.R) + Math.Abs(a.G - b.G) + Math.Abs(a.B - b.B);
+            }
+        return difference;
+    }
     static RECT Bounds(IntPtr hwnd) { RECT value; GetWindowRect(hwnd, out value); return value; }
     static void Drag(int x, int y, int dx, int dy)
     {
@@ -294,6 +313,11 @@ static class UiChecks
             ((ValuePattern)Find(process.Id, "NoteEditor").GetCurrentPattern(ValuePattern.Pattern)).SetValue(text);
             Pause(950);
             Check(Read(directory).Descendants("Text").First().Value.Replace("\r\n", "\n") == text, "editing Chinese in real window auto-saves");
+            SetForegroundWindow(hwnd); Invoke(process.Id, "OptionsButton");
+            var transparencySlider = Find(process.Id, "TextTransparencySlider");
+            Check(transparencySlider.Current.ControlType == ControlType.Slider && transparencySlider.Current.Name == "文字透明度",
+                "font transparency has an accessible icon-led slider in the existing settings menu");
+            Shortcut(0x1B);
 
             var screen = Forms.Screen.PrimaryScreen.Bounds;
             backdrop = new Forms.Form { FormBorderStyle = Forms.FormBorderStyle.None, StartPosition = Forms.FormStartPosition.Manual,
@@ -474,6 +498,7 @@ static class UiChecks
                     if (includeMimePng) screenshot.SetData("image/png", false, new MemoryStream(png));
                     Forms.Clipboard.SetDataObject(screenshot, true);
                     SetForegroundWindow(hwnd); Find(process.Id, "NoteEditor").SetFocus(); Shortcut(0x11, 0x56); Pause(1000);
+                    Wait(() => Read(directory).Descendants("NoteImage").Count() == 2, "screenshot import and automatic save finish");
                     var pasted = Read(directory).Descendants("NoteImage").ToArray();
                     Check(pasted.Length == 2, (includeMimePng ? "MIME PNG" : "DIB") + " screenshot clipboard creates an image link");
                     string screenshotFile = pasted[1].Element("FileName").Value;
@@ -563,6 +588,7 @@ static class UiChecks
                     return fileDialog.Current.ProcessId == process.Id;
                 }, "native image file picker");
                 Forms.Clipboard.SetText(originalImage); Shortcut(0x12, 0x4E); Shortcut(0x11, 0x56); Shortcut(0x0D); Pause(1200);
+                Wait(() => Read(directory).Descendants("NoteImage").Count() == 2, "native file import and automatic save finish");
                 imageEntries = Read(directory).Descendants("NoteImage").ToArray();
                 Check(imageEntries.Length == 2 && imageEntries[1].Element("DisplayName").Value == originalName, "image icon imports a selected local file as a named link");
                 var originalNoteBounds = Bounds(hwnd);
@@ -647,10 +673,81 @@ static class UiChecks
                 Check(Read(directory).Descendants("NoteImage").Count() == 1 && PreviewWindow(process.Id) == null &&
                     File.Exists(Path.Combine(directory, "Images", imageFile)), "removing an image link closes its preview while retaining the file for XML backup recovery");
                 Check(Read(directory).Descendants("Text").First().Value.Replace("\r\n", "\n") == text, "image attachment operations preserve note text through restart");
+                SetForegroundWindow(hwnd); Invoke(process.Id, "OptionsButton");
+                var slider = Find(process.Id, "TextTransparencySlider");
+                var range = (RangeValuePattern)slider.GetCurrentPattern(RangeValuePattern.Pattern);
+                Check(range.Current.Minimum == 0 && range.Current.Maximum == 100 && range.Current.Value == 0,
+                    "font transparency exposes the full zero-to-one-hundred percent range and defaults to opaque");
+                var sliderBounds = slider.Current.BoundingRectangle;
+                Drag((int)sliderBounds.Left + 5, (int)(sliderBounds.Top + sliderBounds.Height / 2), 55, 0);
+                double dragged = range.Current.Value;
+                Check(dragged > 10 && dragged < 95, "real mouse dragging changes font transparency without closing its menu");
+                slider.SetFocus(); Shortcut(0x27);
+                Check(Math.Abs(range.Current.Value - dragged - 1) < 0.01, "keyboard arrow adjusts font transparency by one percent");
+                using (var capture = Capture(new RECT { Left = (int)sliderBounds.Left - 30, Top = (int)sliderBounds.Top - 8,
+                    Right = (int)sliderBounds.Right + 45, Bottom = (int)sliderBounds.Bottom + 8 }, Path.Combine(evidence, "font-transparency-control.png"))) { }
+                Shortcut(0x1B);
+                SetTextTransparency(process.Id, hwnd, 0);
+                var fontBounds = Bounds(hwnd);
+                var editorArea = Find(process.Id, "NoteEditor").Current.BoundingRectangle;
+                var linkArea = Find(process.Id, "ImageLink-" + importedFile).Current.BoundingRectangle;
+                using (var opaque = Capture(fontBounds, Path.Combine(evidence, "opaque-font.png")))
+                {
+                    SetTextTransparency(process.Id, hwnd, 50);
+                    using (var half = Capture(fontBounds, Path.Combine(evidence, "half-transparent-font.png")))
+                    {
+                        SetTextTransparency(process.Id, hwnd, 100);
+                        using (var invisible = Capture(fontBounds, Path.Combine(evidence, "invisible-font.png")))
+                        {
+                            long fullText = PixelDifference(opaque, invisible, fontBounds, editorArea);
+                            long fullLink = PixelDifference(opaque, invisible, fontBounds, linkArea);
+                            double textRatio = PixelDifference(half, invisible, fontBounds, editorArea) / (double)fullText;
+                            double linkRatio = PixelDifference(half, invisible, fontBounds, linkArea) / (double)fullLink;
+                            Check(fullText > 5000 && fullLink > 3000 && textRatio > 0.4 && textRatio < 0.6 && linkRatio > 0.4 && linkRatio < 0.6,
+                                "body text and image links visibly blend at fifty percent transparency");
+                            int visiblePixels = 0;
+                            foreach (var area in new[] { editorArea, linkArea })
+                                for (int y = (int)area.Top - fontBounds.Top; y < (int)area.Bottom - fontBounds.Top; y++)
+                                    for (int x = (int)area.Left - fontBounds.Left; x < (int)area.Right - fontBounds.Left; x++)
+                                    {
+                                        var pixel = invisible.GetPixel(x, y);
+                                        var background = fontBounds.Left + x < 480 ? Color.FromArgb(34, 66, 88) : Color.FromArgb(182, 207, 217);
+                                        if (Math.Abs(pixel.R - background.R) > 5 || Math.Abs(pixel.G - background.G) > 5 || Math.Abs(pixel.B - background.B) > 5) visiblePixels++;
+                                    }
+                            Check(visiblePixels == 0, "one-hundred percent transparency removes all text, link glyphs and shadows from the actual window");
+                            long uiDifference = 0;
+                            foreach (string id in new[] { "NewNoteButton", "PinButton", "ColorButton", "AddImageButton", "MouseThroughButton", "OptionsButton", "HideButton", "Status", "RemoveImage-" + importedFile })
+                                uiDifference += PixelDifference(opaque, invisible, fontBounds, Find(process.Id, id).Current.BoundingRectangle);
+                            Check(uiDifference == 0, "font transparency leaves toolbar, save status and image-removal icons unchanged");
+                        }
+                    }
+                }
+                Invoke(process.Id, "ImageLink-" + importedFile); Wait(() => PreviewWindow(process.Id) != null, "preview with invisible link text");
+                var unaffectedImage = Find(process.Id, "PreviewImage").Current.BoundingRectangle;
+                var unaffectedBounds = Bounds(new IntPtr(PreviewWindow(process.Id).Current.NativeWindowHandle));
+                using (var capture = Capture(unaffectedBounds, Path.Combine(evidence, "font-opacity-preview-unaffected.png")))
+                {
+                    var center = capture.GetPixel((int)(unaffectedImage.Left + unaffectedImage.Width / 2) - unaffectedBounds.Left,
+                        (int)(unaffectedImage.Top + unaffectedImage.Height / 2) - unaffectedBounds.Top);
+                    Check(Math.Abs(center.R - 36) < 2 && Math.Abs(center.G - 198) < 2 && Math.Abs(center.B - 146) < 2,
+                        "font transparency does not fade the original image preview");
+                }
+                Invoke(process.Id, "ClosePreviewButton");
+                Exit(process.Id); Check(process.WaitForExit(5000), "fully transparent note saves and exits normally");
+                process.Dispose(); process = Start(args[0], directory);
+                Wait(() => Window(process.Id) != null, "restored transparent font note"); hwnd = new IntPtr(Window(process.Id).Current.NativeWindowHandle);
+                Check(Read(directory).Descendants("TextOpacity").First().Value == "0" &&
+                    ((ValuePattern)Find(process.Id, "NoteEditor").GetCurrentPattern(ValuePattern.Pattern)).Current.Value.Replace("\r\n", "\n") == text,
+                    "complete font transparency and original text survive an actual EXE restart");
+                SetTextTransparency(process.Id, hwnd, 0);
+                Check(Read(directory).Descendants("TextOpacity").First().Value == "1", "the unchanged settings menu restores invisible fonts to fully visible text");
+                SetTextTransparency(process.Id, hwnd, 50);
             }
             finally { if (originalClipboard != null) Forms.Clipboard.SetDataObject(originalClipboard, true); }
             Invoke(process.Id, "NewNoteButton"); Pause(900);
             Check(Read(directory).Descendants("NoteData").Count() == 2, "new-note control creates a second saved note");
+            var independentOpacity = Read(directory).Descendants("TextOpacity").Select(element => element.Value).ToArray();
+            Check(independentOpacity.Length == 2 && independentOpacity[0] == "0.5" && independentOpacity[1] == "1", "font transparency is independent per note and new notes remain fully visible");
             Exit(process.Id); Check(process.WaitForExit(5000), "all note windows close on exit");
             string snapshot = File.ReadAllText(Path.Combine(directory, "notes.xml"));
             using (var lease = new FileStream(Path.Combine(directory, "instance.lock"), FileMode.OpenOrCreate, FileAccess.ReadWrite, FileShare.None))

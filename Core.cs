@@ -26,7 +26,7 @@ namespace DesktopStickyNotes
         public string TextColor;
         public List<NoteImage> Images = new List<NoteImage>();
         public double Left = double.NaN, Top = double.NaN;
-        public double Width = 330, Height = 310, BackgroundOpacity = 0.22, FontSize = 17;
+        public double Width = 330, Height = 310, BackgroundOpacity = 0.22, FontSize = 17, TextOpacity = 1;
         public bool Topmost = true, Visible = true, DarkText = false, ClickThrough = false;
 
         public void Normalize()
@@ -44,6 +44,7 @@ namespace DesktopStickyNotes
             Width = Bounded(Width, 330, 260, 1600);
             Height = Bounded(Height, 310, 180, 1600);
             BackgroundOpacity = Bounded(BackgroundOpacity, 0.22, 1.0 / 255, 1);
+            TextOpacity = Bounded(TextOpacity, 1, 0, 1);
             FontSize = Bounded(FontSize, 17, 12, 32);
             if (double.IsInfinity(Left)) Left = double.NaN;
             if (double.IsInfinity(Top)) Top = double.NaN;

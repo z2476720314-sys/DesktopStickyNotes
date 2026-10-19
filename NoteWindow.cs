@@ -276,7 +276,7 @@ namespace DesktopStickyNotes
                 row.ColumnDefinitions.Add(new ColumnDefinition());
                 row.ColumnDefinitions.Add(new ColumnDefinition { Width = GridLength.Auto });
                 var link = new Button { Width = double.NaN, Height = 28, HorizontalAlignment = HorizontalAlignment.Left,
-                    Foreground = editor.Foreground, FontSize = note.FontSize, ToolTip = "点击预览：" + image.DisplayName,
+                    Foreground = editor.Foreground, FontSize = note.FontSize, Opacity = note.TextOpacity, ToolTip = "点击预览：" + image.DisplayName,
                     Content = new TextBlock { Text = image.DisplayName, TextDecorations = TextDecorations.Underline,
                         TextTrimming = TextTrimming.CharacterEllipsis, Width = Math.Max(40, Width - 90) } };
                 System.Windows.Automation.AutomationProperties.SetAutomationId(link, "ImageLink-" + image.FileName);
@@ -376,6 +376,7 @@ namespace DesktopStickyNotes
             color.A = (byte)Math.Max(1, Math.Round(note.BackgroundOpacity * 255));
             surface.Background = new SolidColorBrush(color);
             editor.Foreground = foreground;
+            editor.Opacity = note.TextOpacity;
             editor.CaretBrush = foreground;
             editor.FontSize = note.FontSize;
             editor.Effect = note.DarkText ? null : new DropShadowEffect { Color = Colors.Black, BlurRadius = 3, ShadowDepth = 1, Opacity = 0.7 };
@@ -442,6 +443,26 @@ namespace DesktopStickyNotes
             var colorItem = Item("更换字体颜色…", "TextColorPickerMenu", PickTextColor);
             colorItem.Icon = new System.Windows.Shapes.Ellipse { Width = 14, Height = 14, Fill = editor.Foreground, Stroke = Brushes.Gray, StrokeThickness = 1 };
             menu.Items.Add(colorItem);
+            var opacityPanel = new DockPanel { Width = 180 };
+            var opacityValue = new TextBlock { Width = 40, TextAlignment = TextAlignment.Right, VerticalAlignment = VerticalAlignment.Center };
+            DockPanel.SetDock(opacityValue, Dock.Right); opacityPanel.Children.Add(opacityValue);
+            var opacitySlider = new Slider { Minimum = 0, Maximum = 100, Value = Math.Round((1 - note.TextOpacity) * 100),
+                TickFrequency = 1, IsSnapToTickEnabled = true, SmallChange = 1, LargeChange = 10, VerticalAlignment = VerticalAlignment.Center };
+            opacityValue.Text = opacitySlider.Value + "%";
+            System.Windows.Automation.AutomationProperties.SetAutomationId(opacitySlider, "TextTransparencySlider");
+            System.Windows.Automation.AutomationProperties.SetName(opacitySlider, "文字透明度");
+            opacitySlider.ToolTip = "文字透明度：0% 不透明，100% 完全透明";
+            opacitySlider.ValueChanged += delegate {
+                note.TextOpacity = 1 - opacitySlider.Value / 100;
+                opacityValue.Text = opacitySlider.Value + "%"; ApplyAppearance(); Raise(Changed);
+            };
+            opacityPanel.Children.Add(opacitySlider);
+            var opacityItem = new MenuItem { Header = opacityPanel, StaysOpenOnClick = true, ToolTip = opacitySlider.ToolTip,
+                Icon = new Viewbox { Width = 17, Height = 17, Child = new System.Windows.Shapes.Path {
+                    Data = Geometry.Parse("M 2,21 L 8,3 L 14,21 M 4,15 L 12,15 M 21,5 A 7,7 0 1 0 21,19 Z M 21,5 L 21,19"),
+                    Stroke = Brushes.Black, StrokeThickness = 1.5, StrokeLineJoin = PenLineJoin.Round } } };
+            System.Windows.Automation.AutomationProperties.SetName(opacityItem, "文字透明度");
+            menu.Items.Add(opacityItem);
             bool useDark = note.TextColor != "#182732";
             menu.Items.Add(Item(useDark ? "使用深色文字" : "使用白色文字", "TextColorMenu",
                 delegate { note.TextColor = useDark ? "#182732" : "#F8FAFC"; ApplyAppearance(); Raise(Changed); }));

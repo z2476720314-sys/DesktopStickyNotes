@@ -19,6 +19,20 @@ static class Checks
         {
             var store = new NoteStore(directory);
             Check(store.Load().Count == 0, "first start has no previous notes");
+            Directory.CreateDirectory(directory);
+            File.WriteAllText(store.FilePath, "<DesktopStickyNotes><Notes><NoteData><Text>透明文字</Text><TextOpacity>0</TextOpacity></NoteData><NoteData><TextOpacity>0.37</TextOpacity></NoteData></Notes></DesktopStickyNotes>");
+            store.Save(store.Load());
+            var opacityXml = System.Xml.Linq.XDocument.Load(store.FilePath).Descendants("TextOpacity").ToArray();
+            Check(opacityXml.Length == 2 && opacityXml[0].Value == "0" && opacityXml[1].Value == "0.37",
+                "fully transparent and partially transparent fonts survive XML save and reload independently");
+            File.WriteAllText(store.FilePath, "<DesktopStickyNotes><Notes><NoteData><Text>旧便签</Text></NoteData></Notes></DesktopStickyNotes>");
+            Check(store.Load()[0].TextOpacity == 1, "legacy notes keep fully visible fonts when transparency is missing");
+            store.Save(new List<NoteData> { new NoteData { TextOpacity = -1 }, new NoteData { TextOpacity = 2 },
+                new NoteData { TextOpacity = double.NaN }, new NoteData { TextOpacity = double.PositiveInfinity } });
+            var fontOpacity = store.Load();
+            Check(fontOpacity[0].TextOpacity == 0 && fontOpacity[1].TextOpacity == 1, "font opacity is clamped to both zero and one endpoints");
+            Check(fontOpacity[2].TextOpacity == 1 && fontOpacity[3].TextOpacity == 1, "invalid font opacity restores fully visible text");
+            File.Delete(store.FilePath); File.Delete(store.FilePath + ".bak");
             var note = new NoteData { Text = "采购清单\r\n手机壳 × 2 📝", Left = 215, Top = 126,
                 Width = 420, Height = 260, BackgroundOpacity = 0.15, FontSize = 22, Topmost = false };
             store.Save(new List<NoteData> { note });
